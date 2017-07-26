@@ -1,28 +1,34 @@
 FROM nvidia/cuda:8.0-cudnn6-devel-ubuntu16.04
-ENV CUDA_ARCH "30 35 52 60"
 
 MAINTAINER Felix Abecassis "fabecassis@nvidia.com"
+
+ENV CUDA_ARCH_BIN "30 35 50 52 60"
+ENV CUDA_ARCH_PTX "60"
 
 # Install dependencies.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         cmake \
         git \
+        libatlas-base-dev \
+        libatlas-dev \
         libboost-all-dev \
         libgflags-dev \
         libgoogle-glog-dev \
+        libhdf5-dev \
         libprotobuf-dev \
         pkg-config \
         protobuf-compiler \
         python-yaml \
+        python-six \
         wget && \
     rm -rf /var/lib/apt/lists/*
 
-# Install OpenCV 3.2.0 with CUDA support
+# OpenCV 3.2.0 is needed to support custom allocators for GpuMat objects.
 RUN git clone --depth 1 -b 3.2.0 https://github.com/Itseez/opencv.git /opencv && \
     cd /opencv && \
     cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
-          -DWITH_CUDA=ON -DCUDA_ARCH_BIN="${CUDA_ARCH}" -DCUDA_ARCH_PTX="${CUDA_ARCH}" \
+          -DWITH_CUDA=ON -DCUDA_ARCH_BIN="${CUDA_ARCH_BIN}" -DCUDA_ARCH_PTX="${CUDA_ARCH_PTX}" \
           -DWITH_JPEG=ON -DBUILD_JPEG=ON -DWITH_PNG=ON -DBUILD_PNG=ON \
           -DBUILD_TESTS=OFF -DBUILD_EXAMPLES=OFF -DWITH_FFMPEG=OFF -DWITH_GTK=OFF \
           -DWITH_OPENCL=OFF -DWITH_QT=OFF -DWITH_V4L=OFF -DWITH_JASPER=OFF \
@@ -32,8 +38,27 @@ RUN git clone --depth 1 -b 3.2.0 https://github.com/Itseez/opencv.git /opencv &&
           -DBUILD_opencv_ml=OFF -DBUILD_opencv_photo=OFF -DBUILD_opencv_shape=OFF \
           -DBUILD_opencv_cudabgsegm=OFF -DBUILD_opencv_cudaoptflow=OFF -DBUILD_opencv_cudalegacy=OFF \
           -DCUDA_NVCC_FLAGS="--default-stream per-thread -O3" -DCUDA_FAST_MATH=ON && \
-    make -j"$(nproc)" install && ldconfig && \
+    make -j"$(nproc)" install && \
     rm -rf /opencv
+
+# A modified version of Caffe is used to properly handle multithreading and CUDA streams.
+RUN git clone --depth 1 -b bvlc_inference https://github.com/flx42/caffe.git /caffe && \
+    cd /caffe && \
+    cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+          -DCUDA_ARCH_NAME=Manual -DCUDA_ARCH_BIN="${CUDA_ARCH_BIN}" -DCUDA_ARCH_PTX="${CUDA_ARCH_PTX}" \
+          -DUSE_CUDNN=ON -DUSE_OPENCV=ON -DUSE_LEVELDB=OFF -DUSE_LMDB=OFF \
+          -DBUILD_python=OFF -DBUILD_python_layer=OFF -DBUILD_matlab=OFF \
+          -DCMAKE_INSTALL_PREFIX=/usr/local \
+          -DCUDA_NVCC_FLAGS="--default-stream per-thread -O3" && \
+    make -j"$(nproc)" install && \
+    make clean
+
+# Download Caffenet
+RUN /caffe/scripts/download_model_binary.py /caffe/models/bvlc_googlenet && \
+    /caffe/data/ilsvrc12/get_ilsvrc_aux.sh
+
+RUN echo "/usr/local/lib" >> /etc/ld.so.conf && \
+    ldconfig
 
 # Install golang
 ENV GOLANG_VERSION 1.8.1
@@ -42,26 +67,17 @@ RUN wget -O - https://storage.googleapis.com/golang/go${GOLANG_VERSION}.linux-am
 ENV GOPATH /go
 ENV PATH $GOPATH/bin:/usr/local/go/bin:$PATH
 
-# Require the TensorRT archive to be present in the build context.
-ADD TensorRT-2.1.2.x86_64.cuda-8.0-16-04.tar.bz2 /opt/
-
-ENV CPLUS_INCLUDE_PATH /opt/TensorRT-2.1.2/include:$CPLUS_INCLUDE_PATH
-ENV LD_LIBRARY_PATH /opt/TensorRT-2.1.2/targets/x86_64-linux-gnu/lib:$LD_LIBRARY_PATH
-ENV LIBRARY_PATH /opt/TensorRT-2.1.2/targets/x86_64-linux-gnu/lib:$LIBRARY_PATH
-
-# Copy and build GPU Rest Engine with TensorRT
-COPY tensorrt /go/src/tensorrt-server
+# Build inference server
+COPY caffe /go/src/caffe-server
 COPY common.h /go/src/common.h
-RUN go get -ldflags="-s" tensorrt-server
+RUN go get -ldflags="-s" caffe-server
 
-# Download Googlenet model
-RUN git clone -b caffe-0.15 --depth 1 https://github.com/NVIDIA/caffe.git /caffe && \
-    /caffe/scripts/download_model_binary.py /caffe/models/bvlc_googlenet && \
-    /caffe/data/ilsvrc12/get_ilsvrc_aux.sh
+# Add Resnet model files
+ADD ResNet* /caffe/models/resnet/
 
-# Googlenet
-CMD ["tensorrt-server", \
-     "/caffe/models/bvlc_googlenet/deploy.prototxt", \
-     "/caffe/models/bvlc_googlenet/bvlc_googlenet.caffemodel", \
-     "/caffe/data/ilsvrc12/imagenet_mean.binaryproto", \
+# Run model
+CMD ["caffe-server", \
+     "/caffe/models/resnet/ResNet-50-deploy.prototxt", \
+     "/caffe/models/resnet/ResNet-50-model.caffemodel", \
+     "/caffe/models/resnet/ResNet_mean.binaryproto", \
      "/caffe/data/ilsvrc12/synset_words.txt"]

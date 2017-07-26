@@ -1,5 +1,5 @@
 FROM nvidia/cuda:8.0-cudnn6-devel-ubuntu16.04
-ENV CUDA_ARCH "30 35 52"
+ENV CUDA_ARCH "30 35 52 60"
 
 MAINTAINER Felix Abecassis "fabecassis@nvidia.com"
 
@@ -54,7 +54,8 @@ COPY tensorrt /go/src/tensorrt-server
 COPY common.h /go/src/common.h
 RUN go get -ldflags="-s" tensorrt-server
 
-# Download model
+# Download models from Caffe
+# We don't actually need Caffe, just its model files
 RUN git clone -b caffe-0.15 --depth 1 https://github.com/NVIDIA/caffe.git /caffe && \
     /caffe/scripts/download_model_binary.py /caffe/models/bvlc_alexnet && \
     /caffe/data/ilsvrc12/get_ilsvrc_aux.sh
