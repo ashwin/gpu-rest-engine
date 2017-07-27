@@ -326,7 +326,7 @@ struct classifier_ctx
  * inference tasks can execute in parallel on the same GPU. This helps improve
  * GPU utilization since some kernel operations of inference will not fully use
  * the GPU. */
-constexpr static int kContextsPerDevice = 2;
+constexpr static int kContextsPerDevice = 1;
 
 classifier_ctx* classifier_initialize(char* model_file, char* trained_file,
                                       char* mean_file, char* label_file)
